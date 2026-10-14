@@ -462,6 +462,7 @@ public enum NoteWriter {
 
         // The script goes in on stdin rather than as an argument: a note body can be longer
         // than the argument limit, and arguments are visible to anyone running `ps`.
+        let out = PipeCollector(output), err = PipeCollector(errors)
         do { try process.run() } catch {
             throw AppleNotesError.scriptFailed("could not run osascript: \(error.localizedDescription)")
         }
@@ -475,11 +476,11 @@ public enum NoteWriter {
             throw AppleNotesError.scriptFailed("Notes did not answer within \(Int(timeout))s")
         }
 
-        let out = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let err = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let answer = String(decoding: out.collected(), as: UTF8.self)
+        let said = String(decoding: err.collected(), as: UTF8.self)
         guard process.terminationStatus == 0 else {
-            throw AppleNotesError.scriptFailed(err.trimmingCharacters(in: .whitespacesAndNewlines))
+            throw AppleNotesError.scriptFailed(said.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return answer.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
