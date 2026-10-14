@@ -55,7 +55,7 @@ Every other tool in this space drives Notes.app. That inherits its limits — th
 one documents "only notes in top-level folders are accessible", plus stripped tags and
 ignored attachments — and it is slow:
 
-| | |
+| Approach | Time |
 |---|---|
 | AppleScript, count 2 notes | **3.48 s** |
 | this, full listing with folders | **0.008 s** |
