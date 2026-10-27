@@ -4,9 +4,9 @@
 //
 //  Created by David Sherlock on 2026.
 //
-//  Reading the Apple Notes database, without touching it.
+//  Reading the Apple Notes database, without touching it, through swift-sqlite-reader.
 //
-//  IT OPENS `mode=ro`, NOT `immutable=1`, and that distinction is the whole correctness of
+//  IT OPENS `mode=ro` (the reader's `.readOnly`), NOT `immutable=1`, and that distinction is the whole correctness of
 //  this file. `immutable=1` is the obviously-safer-looking choice — it promises SQLite the
 //  file cannot change, so nothing is locked and nothing is written — and it silently ignores
 //  the write-ahead log. Measured on a live library: `immutable=1` returned 4 notes and
@@ -29,7 +29,7 @@
 //
 
 import Foundation
-import SQLite3
+import SQLiteReader
 
 /// A read-only connection to the Apple Notes store.
 public final class NoteStore {
@@ -40,7 +40,7 @@ public final class NoteStore {
             .appendingPathComponent("Library/Group Containers/group.com.apple.notes/NoteStore.sqlite")
     }
 
-    private let handle: OpaquePointer
+    private let database: SQLiteReader
     private let entities: [String: Int]
 
     /// The Core Data store's UUID, from `Z_METADATA`.
@@ -56,26 +56,15 @@ public final class NoteStore {
     /// - Throws: ``AppleNotesError/storeNotFound(_:)`` when there is none,
     ///   ``AppleNotesError/permissionDenied(_:)`` when macOS refuses it.
     public init(url: URL = NoteStore.defaultLocation) throws {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw AppleNotesError.storeNotFound(url)
+        // A protected container lets the path stat and refuses the open; the reader asks the
+        // kernel, so "missing" and "refused" are told apart.
+        let opened: SQLiteReader
+        do {
+            opened = try SQLiteReader(path: url, opening: .readOnly)
+        } catch {
+            throw AppleNotesError(error, store: url)
         }
-        guard FileManager.default.isReadableFile(atPath: url.path) else {
-            throw AppleNotesError.permissionDenied(url)
-        }
-
-        var handle: OpaquePointer?
-        let uri = "file:\(url.path)?mode=ro"
-        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
-        guard sqlite3_open_v2(uri, &handle, flags, nil) == SQLITE_OK, let opened = handle else {
-            let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "could not open"
-            sqlite3_close(handle)
-            // An unreadable protected container surfaces here rather than at the file check,
-            // because TCC lets the path stat and refuses the open.
-            throw message.lowercased().contains("authoriz") || message.lowercased().contains("permission")
-                ? AppleNotesError.permissionDenied(url)
-                : AppleNotesError.databaseError(message)
-        }
-        self.handle = opened
+        self.database = opened
 
         var found: [String: Int] = [:]
         for row in NoteStore.rows(opened, "SELECT Z_NAME, Z_ENT FROM Z_PRIMARYKEY;") {
@@ -98,8 +87,6 @@ public final class NoteStore {
     public func appleScriptID(forNote rowID: Int) -> String {
         NoteWriter.appleScriptID(storeUUID: storeUUID, rowID: rowID)
     }
-
-    deinit { sqlite3_close(handle) }
 
     /// The `Z_ENT` for a Core Data entity name.
     func entity(_ name: String) throws -> Int {
@@ -126,7 +113,7 @@ public final class NoteStore {
         let folder = try entity("ICFolder")
         let account = try entity("ICAccount")
 
-        let candidates = NoteStore.rows(handle, "PRAGMA table_info(ZICCLOUDSYNCINGOBJECT);")
+        let candidates = NoteStore.rows(database, "PRAGMA table_info(ZICCLOUDSYNCINGOBJECT);")
             .compactMap { $0.count > 1 ? $0[1] as? String : nil }
             .filter { $0.hasPrefix("ZACCOUNT") && ($0 == "ZACCOUNT" || Int($0.dropFirst(8)) != nil) }
 
@@ -137,7 +124,7 @@ public final class NoteStore {
                 JOIN ZICCLOUDSYNCINGOBJECT a ON f.\(column) = a.Z_PK AND a.Z_ENT = \(account)
                 WHERE f.Z_ENT = \(folder);
                 """
-            let matches = Int(NoteStore.rows(handle, sql).first?.first as? Int64 ?? 0)
+            let matches = Int(NoteStore.rows(database, sql).first?.first as? Int64 ?? 0)
             if matches > best.1 { best = (column, matches) }
         }
         resolvedAccountColumn = best.0
@@ -167,7 +154,7 @@ public final class NoteStore {
             WHERE a.Z_ENT = \(account) AND a.ZNAME IS NOT NULL
             ORDER BY a.ZNAME;
             """
-        return NoteStore.rows(handle, sql).map { row in
+        return NoteStore.rows(database, sql).map { row in
             Account(id: Int(row[0] as? Int64 ?? 0),
                     identifier: row[1] as? String ?? "",
                     name: row[2] as? String ?? "",
@@ -194,7 +181,7 @@ public final class NoteStore {
             WHERE f.Z_ENT = \(folder) AND f.ZTITLE2 IS NOT NULL
             ORDER BY f.ZTITLE2;
             """
-        return NoteStore.rows(handle, sql).compactMap { row in
+        return NoteStore.rows(database, sql).compactMap { row in
             let orphaned = (row[6] as? Int64 ?? 0) == 1
             guard includeOrphaned || !orphaned else { return nil }
             return Folder(id: Int(row[0] as? Int64 ?? 0),
@@ -227,7 +214,7 @@ public final class NoteStore {
             ORDER BY n.ZISPINNED DESC, n.ZMODIFICATIONDATE1 DESC
             \(limit.map { "LIMIT \($0)" } ?? "");
             """
-        return NoteStore.rows(handle, sql).map(makeNote)
+        return NoteStore.rows(database, sql).map(makeNote)
     }
 
     /// Notes whose title, preview or recognised attachment text contains `query`.
@@ -246,7 +233,7 @@ public final class NoteStore {
             WHERE \(clauses.joined(separator: " AND "))
             ORDER BY n.ZMODIFICATIONDATE1 DESC;
             """
-        return NoteStore.rows(handle, sql).map(makeNote)
+        return NoteStore.rows(database, sql).map(makeNote)
     }
 
     /// One note with its body and attachments decoded.
@@ -254,7 +241,7 @@ public final class NoteStore {
     /// - Parameter id: the row identifier from a listing.
     public func note(id: Int) throws -> Note {
         let sql = "\(noteSelect) WHERE n.Z_PK = \(id);"
-        guard let row = NoteStore.rows(handle, sql).first else {
+        guard let row = NoteStore.rows(database, sql).first else {
             throw AppleNotesError.noteNotFound("id \(id)")
         }
         let note = makeNote(row)
@@ -322,7 +309,7 @@ public final class NoteStore {
             WHERE a.Z_ENT = \(attachment) AND a.ZNOTE = \(id)
                   AND a.ZPARENTATTACHMENT IS NULL;
             """
-        return NoteStore.rows(handle, sql).map { row in
+        return NoteStore.rows(database, sql).map { row in
             let identifier = row[0] as? String ?? ""
             let kind = AttachmentKind.from(uti: row[1] as? String ?? "")
             let account = (row[14] as? String).map {
@@ -458,35 +445,22 @@ public final class NoteStore {
 
     // MARK: - SQLite
 
-    /// Run a query and materialise every row.
+    /// Run a query and materialise every row: `Int64`, `Double`, `String` or `Data`, and
+    /// `nil` for NULL or an empty blob; no rows when the query fails.
     ///
     /// Notes libraries are small — a very large one is a few thousand rows — so the
     /// simplicity of an array beats a cursor here.
-    static func rows(_ handle: OpaquePointer, _ sql: String) -> [[Any?]] {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(statement) }
-
-        var results: [[Any?]] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let count = sqlite3_column_count(statement)
-            var row: [Any?] = []
-            for column in 0..<count {
-                switch sqlite3_column_type(statement, column) {
-                case SQLITE_INTEGER: row.append(sqlite3_column_int64(statement, column))
-                case SQLITE_FLOAT:   row.append(sqlite3_column_double(statement, column))
-                case SQLITE_TEXT:
-                    row.append(String(cString: sqlite3_column_text(statement, column)))
-                case SQLITE_BLOB:
-                    let bytes = sqlite3_column_bytes(statement, column)
-                    if let pointer = sqlite3_column_blob(statement, column), bytes > 0 {
-                        row.append(Data(bytes: pointer, count: Int(bytes)))
-                    } else { row.append(nil) }
-                default: row.append(nil)
+    static func rows(_ database: SQLiteReader, _ sql: String) -> [[Any?]] {
+        ((try? database.rows(sql)) ?? []).map { row in
+            row.values.map { value -> Any? in
+                switch value {
+                case .integer(let number): number
+                case .real(let number): number
+                case .text(let text): text
+                case .blob(let bytes): bytes.isEmpty ? nil : bytes
+                case .null: nil
                 }
             }
-            results.append(row)
         }
-        return results
     }
 }

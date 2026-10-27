@@ -3,16 +3,21 @@ import PackageDescription
 
 let package = Package(
     name: "swift-apple-notes",
-    // SQLite3 and Compression are both in the OS; nothing is vendored and nothing is
-    // fetched. macOS only — the store this reads does not exist anywhere else.
+    // SQLite is read through swift-sqlite-reader; SQLite3 and Compression are both in the
+    // OS, and nothing is vendored. macOS only — the store this reads does not exist anywhere else.
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .library(name: "AppleNotes", targets: ["AppleNotes"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/arraypress/swift-sqlite-reader.git", from: "0.1.0"),
+    ],
     targets: [
-        .target(name: "AppleNotes"),
+        .target(name: "AppleNotes", dependencies: [
+            .product(name: "SQLiteReader", package: "swift-sqlite-reader"),
+        ]),
         .testTarget(name: "AppleNotesTests", dependencies: ["AppleNotes"]),
     ]
 )

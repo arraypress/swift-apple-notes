@@ -34,7 +34,7 @@
 //
 
 import Foundation
-import SQLite3
+import SQLiteReader
 
 /// Decoding a `com.apple.paper` attachment.
 public enum PaperDecoder {
@@ -95,15 +95,8 @@ public enum PaperDecoder {
 
     /// Every object's bytes, read read-only.
     static func objects(at url: URL) -> [Data]? {
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2("file:\(url.path)?mode=ro", &handle, SQLITE_OPEN_READONLY |
-                              SQLITE_OPEN_URI, nil) == SQLITE_OK else {
-            sqlite3_close(handle)
-            return nil
-        }
-        defer { sqlite3_close(handle) }
-        guard let handle else { return nil }
-        return NoteStore.rows(handle, "SELECT Data FROM Reference;").compactMap { $0[0] as? Data }
+        guard let database = try? SQLiteReader(path: url, opening: .readOnly) else { return nil }
+        return NoteStore.rows(database, "SELECT Data FROM Reference;").compactMap { $0[0] as? Data }
     }
 
     // MARK: - Finding the pieces

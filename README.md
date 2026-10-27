@@ -389,7 +389,8 @@ which belongs nowhere near a library. Metadata reads; `isLocked` says so.
 macOS 14+, Swift 6.2. **Full Disk Access** — the store is in a TCC-protected container, and
 without it every call fails with an error naming the fix.
 
-SQLite3 and Compression come from the OS. Nothing is vendored, nothing is fetched.
+One dependency, [swift-sqlite-reader](https://github.com/arraypress/swift-sqlite-reader),
+which opens the stores `mode=ro`. SQLite3 and Compression come from the OS; nothing is vendored.
 
 ## Tested
 
