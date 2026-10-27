@@ -12,7 +12,7 @@ let package = Package(
         .library(name: "AppleNotes", targets: ["AppleNotes"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/arraypress/swift-sqlite-reader.git", from: "0.1.0"),
+        .package(url: "https://github.com/arraypress/swift-sqlite-reader.git", from: "0.2.0"),
     ],
     targets: [
         .target(name: "AppleNotes", dependencies: [
